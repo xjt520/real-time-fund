@@ -2160,7 +2160,7 @@ export default function HomePage() {
         if (next === lastSyncedRef.current) return;
         lastSyncedRef.current = next;
         syncUserConfig(userIdRef.current, false);
-      }, 9000);
+      }, 2000);
     };
 
     const originalSetItem = localStorage.setItem.bind(localStorage);
@@ -2348,24 +2348,41 @@ export default function HomePage() {
 
   // 初始化认证状态监听
   useEffect(() => {
-    // 获取当前 session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchCloudConfig(session.user.id);
-      }
-    });
+    const clearAuthState = () => {
+      setUser(null);
+      setUserMenuOpen(false);
+    };
 
-    // 监听认证状态变化
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
+    const handleSession = async (session, event) => {
+      if (!session?.user) {
+        clearAuthState();
+        return;
+      }
+      if (session.expires_at && session.expires_at * 1000 <= Date.now()) {
+        await supabase.auth.signOut({ scope: 'local' });
+        clearAuthState();
+        return;
+      }
+      setUser(session.user);
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
         setLoginModalOpen(false);
         setLoginEmail('');
         setLoginSuccess('');
         setLoginError('');
-        fetchCloudConfig(session.user.id);
       }
+      fetchCloudConfig(session.user.id);
+    };
+
+    supabase.auth.getSession().then(async ({ data, error }) => {
+      if (error) {
+        clearAuthState();
+        return;
+      }
+      await handleSession(data?.session ?? null, 'INITIAL_SESSION');
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      await handleSession(session ?? null, event);
     });
 
     return () => subscription.unsubscribe();
