@@ -31,8 +31,11 @@ import ScanProgressModal from "./components/ScanProgressModal";
 import SettingsModal from "./components/SettingsModal";
 import SuccessModal from "./components/SuccessModal";
 import TradeModal from "./components/TradeModal";
+import TransactionHistoryModal from "./components/TransactionHistoryModal";
+import AddHistoryModal from "./components/AddHistoryModal";
 import UpdatePromptModal from "./components/UpdatePromptModal";
 import WeChatModal from "./components/WeChatModal";
+import githubImg from "./assets/github.svg";
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import { fetchFundData, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, searchFunds } from './api/fund';
 import packageJson from '../package.json';
@@ -395,6 +398,9 @@ export default function HomePage() {
   const [donateOpen, setDonateOpen] = useState(false);
   const [holdings, setHoldings] = useState({}); // { [code]: { share: number, cost: number } }
   const [pendingTrades, setPendingTrades] = useState([]); // [{ id, fundCode, share, date, ... }]
+  const [transactions, setTransactions] = useState({}); // { [code]: [{ id, type, amount, share, price, date, timestamp }] }
+  const [historyModal, setHistoryModal] = useState({ open: false, fund: null });
+  const [addHistoryModal, setAddHistoryModal] = useState({ open: false, fund: null });
   const [percentModes, setPercentModes] = useState({}); // { [code]: boolean }
 
   const holdingsRef = useRef(holdings);
@@ -643,13 +649,18 @@ export default function HomePage() {
   };
 
   const handleAction = (type, fund) => {
-    setActionModal({ open: false, fund: null });
+    if (type !== 'history') {
+      setActionModal({ open: false, fund: null });
+    }
+    
     if (type === 'edit') {
       setHoldingModal({ open: true, fund });
     } else if (type === 'clear') {
       setClearConfirm({ fund });
     } else if (type === 'buy' || type === 'sell') {
       setTradeModal({ open: true, fund, type });
+    } else if (type === 'history') {
+      setHistoryModal({ open: true, fund });
     }
   };
 
@@ -667,6 +678,7 @@ export default function HomePage() {
     let stateChanged = false;
     let tempHoldings = { ...holdingsRef.current };
     const processedIds = new Set();
+    const newTransactions = [];
 
     for (const trade of currentPending) {
       let queryDate = trade.date;
@@ -682,21 +694,43 @@ export default function HomePage() {
         const current = tempHoldings[trade.fundCode] || { share: 0, cost: 0 };
 
         let newShare, newCost;
+        let tradeShare = 0;
+        let tradeAmount = 0;
+
         if (trade.type === 'buy') {
              const feeRate = trade.feeRate || 0;
              const netAmount = trade.amount / (1 + feeRate / 100);
              const share = netAmount / result.value;
              newShare = current.share + share;
              newCost = (current.cost * current.share + trade.amount) / newShare;
+             
+             tradeShare = share;
+             tradeAmount = trade.amount;
         } else {
              newShare = Math.max(0, current.share - trade.share);
              newCost = current.cost;
              if (newShare === 0) newCost = 0;
+             
+             tradeShare = trade.share;
+             tradeAmount = trade.share * result.value;
         }
 
         tempHoldings[trade.fundCode] = { share: newShare, cost: newCost };
         stateChanged = true;
         processedIds.add(trade.id);
+        
+        // 记录交易历史
+        newTransactions.push({
+            id: trade.id,
+            fundCode: trade.fundCode,
+            type: trade.type,
+            share: tradeShare,
+            amount: tradeAmount,
+            price: result.value,
+            date: result.date, // 使用获取到净值的日期
+            isAfter3pm: trade.isAfter3pm,
+            timestamp: Date.now()
+        });
       }
     }
 
@@ -710,8 +744,74 @@ export default function HomePage() {
           return next;
       });
 
+      setTransactions(prev => {
+          const nextState = { ...prev };
+          newTransactions.forEach(tx => {
+              const current = nextState[tx.fundCode] || [];
+              // 避免重复添加 (虽然 id 应该唯一)
+              if (!current.some(t => t.id === tx.id)) {
+                  nextState[tx.fundCode] = [tx, ...current].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+              }
+          });
+          storageHelper.setItem('transactions', JSON.stringify(nextState));
+          return nextState;
+      });
+
       showToast(`已处理 ${processedIds.size} 笔待定交易`, 'success');
     }
+  };
+
+  const handleDeleteTransaction = (fundCode, transactionId) => {
+    setTransactions(prev => {
+      const current = prev[fundCode] || [];
+      const next = current.filter(t => t.id !== transactionId);
+      const nextState = { ...prev, [fundCode]: next };
+      storageHelper.setItem('transactions', JSON.stringify(nextState));
+      return nextState;
+    });
+    showToast('交易记录已删除', 'success');
+  };
+
+  const handleAddHistory = (data) => {
+    const fundCode = data.fundCode;
+    const current = holdings[fundCode] || { share: 0, cost: 0 };
+    const isBuy = data.type === 'buy';
+
+    let newShare, newCost;
+
+    if (isBuy) {
+      newShare = current.share + data.share;
+      // 加权平均成本
+      const buyCost = data.amount; // amount is total cost
+      newCost = (current.cost * current.share + buyCost) / newShare;
+    } else {
+      newShare = Math.max(0, current.share - data.share);
+      newCost = current.cost;
+      if (newShare === 0) newCost = 0;
+    }
+
+    handleSaveHolding(fundCode, { share: newShare, cost: newCost });
+
+    setTransactions(prev => {
+      const current = prev[fundCode] || [];
+      const record = {
+        id: crypto.randomUUID(),
+        type: data.type,
+        share: data.share,
+        amount: data.amount,
+        price: data.price,
+        date: data.date,
+        isAfter3pm: false, // 历史记录通常不需要此标记，或者默认为 false
+        timestamp: data.timestamp || Date.now()
+      };
+      // 按时间倒序排列
+      const next = [record, ...current].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      const nextState = { ...prev, [fundCode]: next };
+      storageHelper.setItem('transactions', JSON.stringify(nextState));
+      return nextState;
+    });
+    showToast('历史记录已添加', 'success');
+    setAddHistoryModal({ open: false, fund: null });
   };
 
   const handleTrade = (fund, data) => {
@@ -764,6 +864,25 @@ export default function HomePage() {
     }
 
     handleSaveHolding(fund.code, { share: newShare, cost: newCost });
+
+    setTransactions(prev => {
+      const current = prev[fund.code] || [];
+      const record = {
+        id: crypto.randomUUID(),
+        type: tradeModal.type,
+        share: data.share,
+        amount: isBuy ? data.totalCost : (data.share * data.price),
+        price: data.price,
+        date: data.date,
+        isAfter3pm: data.isAfter3pm,
+        timestamp: Date.now()
+      };
+      const next = [record, ...current];
+      const nextState = { ...prev, [fund.code]: next };
+      storageHelper.setItem('transactions', JSON.stringify(nextState));
+      return nextState;
+    });
+
     setTradeModal({ open: false, fund: null, type: 'buy' });
   };
 
@@ -1137,7 +1256,7 @@ export default function HomePage() {
   }, []);
 
   const storageHelper = useMemo(() => {
-    const keys = new Set(['funds', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'refreshMs', 'holdings', 'pendingTrades', 'viewMode']);
+    const keys = new Set(['funds', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'refreshMs', 'holdings', 'pendingTrades', 'transactions', 'viewMode']);
     const triggerSync = (key, prevValue, nextValue) => {
       if (keys.has(key)) {
         // 标记为脏数据
@@ -1381,6 +1500,10 @@ export default function HomePage() {
       const savedHoldings = JSON.parse(localStorage.getItem('holdings') || '{}');
       if (savedHoldings && typeof savedHoldings === 'object') {
         setHoldings(savedHoldings);
+      }
+      const savedTransactions = JSON.parse(localStorage.getItem('transactions') || '{}');
+      if (savedTransactions && typeof savedTransactions === 'object') {
+        setTransactions(savedTransactions);
       }
       const savedViewMode = localStorage.getItem('viewMode');
       if (savedViewMode === 'card' || savedViewMode === 'list') {
@@ -2070,6 +2193,9 @@ export default function HomePage() {
       if (!keys || keys.has('pendingTrades')) {
         all.pendingTrades = JSON.parse(localStorage.getItem('pendingTrades') || '[]');
       }
+      if (!keys || keys.has('transactions')) {
+        all.transactions = JSON.parse(localStorage.getItem('transactions') || '{}');
+      }
 
       // 如果是全量收集（keys 为 null），进行完整的数据清洗和验证逻辑
       if (!keys) {
@@ -2194,6 +2320,10 @@ export default function HomePage() {
         : [];
       setPendingTrades(nextPendingTrades);
       storageHelper.setItem('pendingTrades', JSON.stringify(nextPendingTrades));
+
+      const nextTransactions = cloudData.transactions && typeof cloudData.transactions === 'object' ? cloudData.transactions : {};
+      setTransactions(nextTransactions);
+      storageHelper.setItem('transactions', JSON.stringify(nextTransactions));
 
       if (nextFunds.length) {
         const codes = Array.from(new Set(nextFunds.map((f) => f.code)));
@@ -2344,6 +2474,7 @@ export default function HomePage() {
         viewMode: localStorage.getItem('viewMode') === 'list' ? 'list' : 'card',
         holdings: JSON.parse(localStorage.getItem('holdings') || '{}'),
         pendingTrades: JSON.parse(localStorage.getItem('pendingTrades') || '[]'),
+        transactions: JSON.parse(localStorage.getItem('transactions') || '{}'),
         exportedAt: nowInTz().toISOString()
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -2463,6 +2594,20 @@ export default function HomePage() {
           storageHelper.setItem('holdings', JSON.stringify(mergedHoldings));
         }
 
+        if (data.transactions && typeof data.transactions === 'object') {
+             const currentTransactions = JSON.parse(localStorage.getItem('transactions') || '{}');
+             const mergedTransactions = { ...currentTransactions };
+             Object.entries(data.transactions).forEach(([code, txs]) => {
+                 if (!Array.isArray(txs)) return;
+                 const existing = mergedTransactions[code] || [];
+                 const existingIds = new Set(existing.map(t => t.id));
+                 const newTxs = txs.filter(t => !existingIds.has(t.id));
+                 mergedTransactions[code] = [...existing, ...newTxs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+             });
+             setTransactions(mergedTransactions);
+             storageHelper.setItem('transactions', JSON.stringify(mergedTransactions));
+        }
+
         if (Array.isArray(data.pendingTrades)) {
           const existingPending = Array.isArray(currentPendingTrades) ? currentPendingTrades : [];
           const incomingPending = data.pendingTrades.filter((trade) => trade && trade.fundCode);
@@ -2579,40 +2724,62 @@ export default function HomePage() {
       <div className="navbar glass" ref={navbarRef}>
         {refreshing && <div className="loading-bar"></div>}
         <div className={`brand ${(isSearchFocused || selectedFunds.length > 0) ? 'search-focused-sibling' : ''}`}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="var(--accent)" strokeWidth="2" />
-            <path d="M5 14c2-4 7-6 14-5" stroke="var(--primary)" strokeWidth="2" />
-          </svg>
+          <div
+            style={{
+              width: 24,
+              height: 24,
+              marginRight: 4,
+              position: 'relative',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              overflow: 'hidden',
+            }}
+            title={isSyncing ? '正在同步到云端...' : undefined}
+          >
+            {/* 同步中图标 */}
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                margin: 'auto',
+                opacity: isSyncing ? 1 : 0,
+                transform: isSyncing ? 'translateY(0px)' : 'translateY(4px)',
+                transition: 'opacity 0.25s ease, transform 0.25s ease',
+              }}
+            >
+              <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" stroke="var(--primary)" />
+              <path d="M12 12v9" stroke="var(--accent)" />
+              <path d="m16 16-4-4-4 4" stroke="var(--accent)" />
+            </svg>
+            {/* 默认图标 */}
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                margin: 'auto',
+                opacity: isSyncing ? 0 : 1,
+                transform: isSyncing ? 'translateY(-4px)' : 'translateY(0px)',
+                transition: 'opacity 0.25s ease, transform 0.25s ease',
+              }}
+            >
+              <circle cx="12" cy="12" r="10" stroke="var(--accent)" strokeWidth="2" />
+              <path d="M5 14c2-4 7-6 14-5" stroke="var(--primary)" strokeWidth="2" />
+            </svg>
+          </div>
           <span>基估宝</span>
-          <AnimatePresence>
-            {isSyncing && (
-              <motion.div
-                key="sync-icon"
-                initial={{ opacity: 0, width: 0, marginLeft: 0 }}
-                animate={{ opacity: 1, width: 'auto', marginLeft: 8 }}
-                exit={{ opacity: 0, width: 0, marginLeft: 0 }}
-                style={{ display: 'flex', alignItems: 'center', overflow: 'hidden', height: 24 }}
-                title="正在同步到云端..."
-              >
-                <motion.svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  animate={{ opacity: [0.5, 1, 0.5] }}
-                  transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
-                >
-                  <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" stroke="var(--primary)" />
-                  <path d="M12 12v9" stroke="var(--accent)" />
-                  <path d="m16 16-4-4-4 4" stroke="var(--accent)" />
-                </motion.svg>
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
         <div className={`glass add-fund-section navbar-add-fund ${(isSearchFocused || selectedFunds.length > 0) ? 'search-focused' : ''}`} role="region" aria-label="添加基金">
           <div className="search-container" ref={dropdownRef}>
@@ -2736,6 +2903,7 @@ export default function HomePage() {
               <UpdateIcon width="14" height="14" />
             </div>
           )}
+          {!isMobile && <Image unoptimized alt="项目Github地址" src={githubImg} style={{ width: '30px', height: '30px', cursor: 'pointer' }} onClick={() => window.open("https://github.com/hzm0321/real-time-fund")} />}
           {isMobile && (
             <button
               className="icon-button mobile-search-btn"
@@ -3593,6 +3761,7 @@ export default function HomePage() {
                                   code={f.code} 
                                   isExpanded={!collapsedTrends.has(f.code)}
                                   onToggleExpand={() => toggleTrendCollapse(f.code)}
+                                  transactions={transactions[f.code] || []}
                                 />
                               </>
                             )}
@@ -3726,6 +3895,7 @@ export default function HomePage() {
             fund={actionModal.fund}
             onClose={() => setActionModal({ open: false, fund: null })}
             onAction={(type) => handleAction(type, actionModal.fund)}
+            hasHistory={!!transactions[actionModal.fund?.code]?.length}
           />
         )}
       </AnimatePresence>
@@ -3739,6 +3909,37 @@ export default function HomePage() {
             onClose={() => setTradeModal({ open: false, fund: null, type: 'buy' })}
             onConfirm={(data) => handleTrade(tradeModal.fund, data)}
             pendingTrades={pendingTrades}
+            onDeletePending={(id) => {
+                setPendingTrades(prev => {
+                    const next = prev.filter(t => t.id !== id);
+                    storageHelper.setItem('pendingTrades', JSON.stringify(next));
+                    return next;
+                });
+                showToast('已撤销待处理交易', 'success');
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {addHistoryModal.open && (
+          <AddHistoryModal
+            fund={addHistoryModal.fund}
+            onClose={() => setAddHistoryModal({ open: false, fund: null })}
+            onConfirm={handleAddHistory}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {historyModal.open && (
+          <TransactionHistoryModal
+            fund={historyModal.fund}
+            transactions={transactions[historyModal.fund?.code] || []}
+            pendingTransactions={pendingTrades.filter(t => t.fundCode === historyModal.fund?.code)}
+            onClose={() => setHistoryModal({ open: false, fund: null })}
+            onDeleteTransaction={(id) => handleDeleteTransaction(historyModal.fund?.code, id)}
+            onAddHistory={() => setAddHistoryModal({ open: true, fund: historyModal.fund })}
             onDeletePending={(id) => {
                 setPendingTrades(prev => {
                     const next = prev.filter(t => t.id !== id);
@@ -3960,3 +4161,4 @@ export default function HomePage() {
     </div>
   );
 }
+
