@@ -37,6 +37,8 @@ import UpdatePromptModal from "./components/UpdatePromptModal";
 import WeChatModal from "./components/WeChatModal";
 import githubImg from "./assets/github.svg";
 import { supabase, isSupabaseConfigured } from './lib/supabase';
+import * as localAuth from './lib/localAuth';
+import * as encryption from './lib/encryption';
 import { fetchFundData, fetchLatestRelease, fetchShanghaiIndexDate, fetchSmartFundNetValue, searchFunds } from './api/fund';
 import packageJson from '../package.json';
 
@@ -314,6 +316,8 @@ export default function HomePage() {
 
   // 用户认证状态
   const [user, setUser] = useState(null);
+  const [localUser, setLocalUser] = useState(null);
+  const [authMode, setAuthMode] = useState(null);
   const [lastSyncTime, setLastSyncTime] = useState(null);
 
   useEffect(() => {
@@ -336,12 +340,13 @@ export default function HomePage() {
   const [loginOtp, setLoginOtp] = useState('');
 
   const userAvatar = useMemo(() => {
-    if (!user?.id) return '';
+    const userId = user?.id || localUser?.id;
+    if (!userId) return '';
     return createAvatar(glass, {
-      seed: user.id,
+      seed: userId,
       size: 80
     }).toDataUri();
-  }, [user?.id]);
+  }, [user?.id, localUser?.id]);
 
   // 反馈弹窗状态
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -941,10 +946,6 @@ export default function HomePage() {
 
   const handleOpenLogin = () => {
     setUserMenuOpen(false);
-    if (!isSupabaseConfigured) {
-      showToast('未配置 Supabase，无法登录', 'error');
-      return;
-    }
     setLoginModalOpen(true);
   };
 
@@ -1523,6 +1524,15 @@ export default function HomePage() {
     } catch { }
   }, []);
 
+  // 初始化本地用户状态
+  useEffect(() => {
+    const currentLocalUser = localAuth.getCurrentLocalUser();
+    if (currentLocalUser) {
+      setLocalUser(currentLocalUser);
+      setAuthMode('local');
+    }
+  }, []);
+
   // 初始化认证状态监听
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -1571,6 +1581,8 @@ export default function HomePage() {
         return;
       }
       setUser(session.user);
+      setAuthMode('cloud');
+      setLocalUser(null);
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
         setLoginModalOpen(false);
         setLoginEmail('');
@@ -1701,9 +1713,59 @@ export default function HomePage() {
     setLoginLoading(false);
   };
 
+  // 本地登录
+  const handleLocalLogin = async (username, password) => {
+    setLoginError('');
+    setLoginLoading(true);
+    try {
+      const user = await localAuth.loginLocalUser(username, password);
+      setLocalUser(user);
+      setAuthMode('local');
+      setUser(null);
+      setLoginModalOpen(false);
+      setLoginError('');
+      showToast('登录成功', 'success');
+    } catch (err) {
+      setLoginError(err.message || '登录失败');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  // 本地注册
+  const handleLocalRegister = async (username, password) => {
+    setLoginError('');
+    setLoginLoading(true);
+    try {
+      const user = await localAuth.createLocalUser(username, password);
+      setLocalUser(user);
+      setAuthMode('local');
+      setUser(null);
+      setLoginModalOpen(false);
+      setLoginError('');
+      showToast('注册成功', 'success');
+    } catch (err) {
+      setLoginError(err.message || '注册失败');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
   // 登出
   const handleLogout = async () => {
     isLoggingOutRef.current = true;
+
+    // 本地用户登出
+    if (authMode === 'local') {
+      localAuth.logoutLocalUser();
+      setLocalUser(null);
+      setAuthMode(null);
+      setUserMenuOpen(false);
+      setLoginModalOpen(false);
+      showToast('已登出', 'success');
+      return;
+    }
+
     if (!isSupabaseConfigured) {
       setLoginModalOpen(false);
       setLoginError('');
@@ -1712,6 +1774,7 @@ export default function HomePage() {
       setLoginOtp('');
       setUserMenuOpen(false);
       setUser(null);
+      setAuthMode(null);
       return;
     }
     try {
@@ -1752,6 +1815,7 @@ export default function HomePage() {
       setLoginOtp('');
       setUserMenuOpen(false);
       setUser(null);
+      setAuthMode(null);
     }
   };
 
@@ -2100,6 +2164,144 @@ export default function HomePage() {
 
   const importFileRef = useRef(null);
   const [importMsg, setImportMsg] = useState('');
+
+  // 自动备份相关状态
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
+  const [backups, setBackups] = useState([]);
+  const backupDebounceRef = useRef(null);
+
+  // 初始化自动备份状态
+  useEffect(() => {
+    const savedAutoBackup = localStorage.getItem('autoBackupEnabled') === 'true';
+    setAutoBackupEnabled(savedAutoBackup);
+
+    const savedBackups = localStorage.getItem('auto_backups');
+    if (savedBackups) {
+      try {
+        setBackups(JSON.parse(savedBackups));
+      } catch { }
+    }
+  }, []);
+
+  // 保存自动备份状态
+  useEffect(() => {
+    localStorage.setItem('autoBackupEnabled', String(autoBackupEnabled));
+  }, [autoBackupEnabled]);
+
+  // 创建自动备份
+  const createAutoBackup = useCallback(() => {
+    if (!autoBackupEnabled) return;
+
+    const backup = {
+      timestamp: new Date().toISOString(),
+      data: {
+        funds: JSON.parse(localStorage.getItem('funds') || '[]'),
+        favorites: JSON.parse(localStorage.getItem('favorites') || '[]'),
+        groups: JSON.parse(localStorage.getItem('groups') || '[]'),
+        collapsedCodes: JSON.parse(localStorage.getItem('collapsedCodes') || '[]'),
+        collapsedTrends: JSON.parse(localStorage.getItem('collapsedTrends') || '[]'),
+        refreshMs: localStorage.getItem('refreshMs') || '30000',
+        viewMode: localStorage.getItem('viewMode') || 'card',
+        holdings: JSON.parse(localStorage.getItem('holdings') || '{}'),
+        pendingTrades: JSON.parse(localStorage.getItem('pendingTrades') || '[]'),
+        transactions: JSON.parse(localStorage.getItem('transactions') || '{}')
+      }
+    };
+
+    setBackups(prev => {
+      const newBackups = [backup, ...prev].slice(0, 3);
+      localStorage.setItem('auto_backups', JSON.stringify(newBackups));
+      return newBackups;
+    });
+  }, [autoBackupEnabled]);
+
+  // 恢复备份
+  const handleRestoreBackup = useCallback((backup) => {
+    try {
+      const data = backup.data;
+
+      if (Array.isArray(data.funds)) {
+        setFunds(data.funds);
+        storageHelper.setItem('funds', JSON.stringify(data.funds));
+      }
+      if (Array.isArray(data.favorites)) {
+        setFavorites(new Set(data.favorites));
+        storageHelper.setItem('favorites', JSON.stringify(data.favorites));
+      }
+      if (Array.isArray(data.groups)) {
+        setGroups(data.groups);
+        storageHelper.setItem('groups', JSON.stringify(data.groups));
+      }
+      if (Array.isArray(data.collapsedCodes)) {
+        setCollapsedCodes(new Set(data.collapsedCodes));
+        storageHelper.setItem('collapsedCodes', JSON.stringify(data.collapsedCodes));
+      }
+      if (Array.isArray(data.collapsedTrends)) {
+        setCollapsedTrends(new Set(data.collapsedTrends));
+        storageHelper.setItem('collapsedTrends', JSON.stringify(data.collapsedTrends));
+      }
+      if (data.refreshMs) {
+        setRefreshMs(parseInt(data.refreshMs, 10));
+        setTempSeconds(Math.round(parseInt(data.refreshMs, 10) / 1000));
+        storageHelper.setItem('refreshMs', data.refreshMs);
+      }
+      if (data.viewMode) {
+        applyViewMode(data.viewMode);
+      }
+      if (data.holdings) {
+        setHoldings(data.holdings);
+        storageHelper.setItem('holdings', JSON.stringify(data.holdings));
+      }
+      if (data.pendingTrades) {
+        setPendingTrades(data.pendingTrades);
+        storageHelper.setItem('pendingTrades', JSON.stringify(data.pendingTrades));
+      }
+      if (data.transactions) {
+        setTransactions(data.transactions);
+        storageHelper.setItem('transactions', JSON.stringify(data.transactions));
+      }
+
+      setSuccessModal({ open: true, message: '备份恢复成功' });
+      setSettingsOpen(false);
+
+      // 刷新数据
+      const allCodes = data.funds?.map(f => f.code) || [];
+      if (allCodes.length) {
+        refreshAll(allCodes);
+      }
+    } catch (err) {
+      console.error('Restore backup error:', err);
+      showToast('恢复备份失败', 'error');
+    }
+  }, [storageHelper, applyViewMode, refreshAll, showToast]);
+
+  // 删除备份
+  const handleDeleteBackup = useCallback((timestamp) => {
+    setBackups(prev => {
+      const newBackups = prev.filter(b => b.timestamp !== timestamp);
+      localStorage.setItem('auto_backups', JSON.stringify(newBackups));
+      return newBackups;
+    });
+  }, []);
+
+  // 自动备份触发（数据变化时）
+  useEffect(() => {
+    if (!autoBackupEnabled) return;
+
+    if (backupDebounceRef.current) {
+      clearTimeout(backupDebounceRef.current);
+    }
+
+    backupDebounceRef.current = setTimeout(() => {
+      createAutoBackup();
+    }, 30000); // 30秒防抖后创建备份
+
+    return () => {
+      if (backupDebounceRef.current) {
+        clearTimeout(backupDebounceRef.current);
+      }
+    };
+  }, [autoBackupEnabled, funds, favorites, groups, holdings, transactions, createAutoBackup]);
 
   const normalizeCode = (value) => String(value || '').trim();
   const normalizeNumber = (value) => {
@@ -2580,12 +2782,78 @@ export default function HomePage() {
     }
   };
 
+  const exportEncryptedData = async (password) => {
+    try {
+      const payload = {
+        funds: JSON.parse(localStorage.getItem('funds') || '[]'),
+        favorites: JSON.parse(localStorage.getItem('favorites') || '[]'),
+        groups: JSON.parse(localStorage.getItem('groups') || '[]'),
+        collapsedCodes: JSON.parse(localStorage.getItem('collapsedCodes') || '[]'),
+        collapsedTrends: JSON.parse(localStorage.getItem('collapsedTrends') || '[]'),
+        refreshMs: parseInt(localStorage.getItem('refreshMs') || '30000', 10),
+        viewMode: localStorage.getItem('viewMode') === 'list' ? 'list' : 'card',
+        holdings: JSON.parse(localStorage.getItem('holdings') || '{}'),
+        pendingTrades: JSON.parse(localStorage.getItem('pendingTrades') || '[]'),
+        transactions: JSON.parse(localStorage.getItem('transactions') || '{}'),
+        exportedAt: nowInTz().toISOString()
+      };
+
+      const encryptedPayload = await encryption.encryptData(payload, password);
+      const blob = new Blob([JSON.stringify(encryptedPayload, null, 2)], { type: 'application/json' });
+
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `realtime-fund-config-encrypted-${Date.now()}.json`,
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        setSuccessModal({ open: true, message: '加密导出成功' });
+        setSettingsOpen(false);
+        return;
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `realtime-fund-config-encrypted-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setSuccessModal({ open: true, message: '加密导出成功' });
+      setSettingsOpen(false);
+    } catch (err) {
+      console.error('Encrypted export error:', err);
+      throw err;
+    }
+  };
+
   const handleImportFileChange = async (e) => {
     try {
       const file = e.target.files?.[0];
       if (!file) return;
       const text = await file.text();
-      const data = JSON.parse(text);
+      let data = JSON.parse(text);
+
+      // 检测是否为加密文件
+      if (encryption.isEncryptedPayload(data)) {
+        const password = prompt('请输入解密密码：');
+        if (!password) {
+          setImportMsg('已取消解密');
+          setTimeout(() => setImportMsg(''), 4000);
+          if (importFileRef.current) importFileRef.current.value = '';
+          return;
+        }
+        try {
+          data = await encryption.decryptData(data, password);
+        } catch (decryptErr) {
+          setImportMsg('解密失败，密码错误或文件损坏');
+          setTimeout(() => setImportMsg(''), 4000);
+          if (importFileRef.current) importFileRef.current.value = '';
+          return;
+        }
+      }
+
       if (data && typeof data === 'object') {
         // 从 localStorage 读取最新数据进行合并，防止状态滞后导致的数据丢失
         const currentFunds = JSON.parse(localStorage.getItem('funds') || '[]');
@@ -3010,12 +3278,12 @@ export default function HomePage() {
           {/* 用户菜单 */}
           <div className="user-menu-container" ref={userMenuRef}>
             <button
-              className={`icon-button user-menu-trigger ${user ? 'logged-in' : ''}`}
-              aria-label={user ? '用户菜单' : '登录'}
+              className={`icon-button user-menu-trigger ${user || localUser ? 'logged-in' : ''}`}
+              aria-label={user || localUser ? '用户菜单' : '登录'}
               onClick={() => setUserMenuOpen(!userMenuOpen)}
-              title={user ? (user.email || '用户') : '用户菜单'}
+              title={user ? (user.email || '用户') : localUser ? (localUser.username || '用户') : '用户菜单'}
             >
-              {user ? (
+              {user || localUser ? (
                 <div className="user-avatar-small">
                   {userAvatar ? (
                     <Image
@@ -3027,7 +3295,7 @@ export default function HomePage() {
                       style={{ borderRadius: '50%' }}
                     />
                   ) : (
-                    (user.email?.charAt(0).toUpperCase() || 'U')
+                    (user?.email?.charAt(0).toUpperCase() || localUser?.username?.charAt(0).toUpperCase() || 'U')
                   )}
                 </div>
               ) : (
@@ -3045,7 +3313,7 @@ export default function HomePage() {
                   transition={{ duration: 0.15 }}
                   style={{ transformOrigin: 'top right', top: navbarHeight + (isMobile ? -20 : 10) }}
                 >
-                  {user ? (
+                  {user || localUser ? (
                     <>
                       <div className="user-menu-header">
                         <div className="user-avatar-large">
@@ -3059,13 +3327,13 @@ export default function HomePage() {
                               style={{ borderRadius: '50%' }}
                             />
                           ) : (
-                            (user.email?.charAt(0).toUpperCase() || 'U')
+                            (user?.email?.charAt(0).toUpperCase() || localUser?.username?.charAt(0).toUpperCase() || 'U')
                           )}
                         </div>
                         <div className="user-info">
-                          <span className="user-email">{user.email}</span>
-                          <span className="user-status">已登录</span>
-                          {lastSyncTime && (
+                          <span className="user-email">{user?.email || localUser?.username}</span>
+                          <span className="user-status">{authMode === 'cloud' ? '云端登录' : '本地登录'}</span>
+                          {lastSyncTime && authMode === 'cloud' && (
                             <span className="muted" style={{ fontSize: '10px', marginTop: 2 }}>
                               同步于 {dayjs(lastSyncTime).format('MM-DD HH:mm')}
                             </span>
@@ -3097,6 +3365,16 @@ export default function HomePage() {
                       >
                         <SettingsIcon width="16" height="16" />
                         <span>设置</span>
+                      </button>
+                      <button
+                        className="user-menu-item"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          setLogoutConfirmOpen({ show: true, switchMode: true });
+                        }}
+                      >
+                        <LoginIcon width="16" height="16" />
+                        <span>切换登录方式</span>
                       </button>
                       <button
                         className="user-menu-item danger"
@@ -3892,12 +4170,16 @@ export default function HomePage() {
       <AnimatePresence>
         {logoutConfirmOpen && (
           <ConfirmModal
-            title="确认登出"
-            message="确定要退出当前账号吗？"
-            confirmText="确认登出"
-            onConfirm={() => {
+            title={logoutConfirmOpen.switchMode ? "切换登录方式" : "确认登出"}
+            message={logoutConfirmOpen.switchMode ? "切换登录方式需要先登出当前账号，确定要继续吗？" : "确定要退出当前账号吗？"}
+            confirmText={logoutConfirmOpen.switchMode ? "继续切换" : "确认登出"}
+            onConfirm={async () => {
+              const wasSwitchMode = logoutConfirmOpen.switchMode;
               setLogoutConfirmOpen(false);
-              handleLogout();
+              await handleLogout();
+              if (wasSwitchMode) {
+                setLoginModalOpen(true);
+              }
             }}
             onCancel={() => setLogoutConfirmOpen(false)}
           />
@@ -4161,9 +4443,15 @@ export default function HomePage() {
           setTempSeconds={setTempSeconds}
           saveSettings={saveSettings}
           exportLocalData={exportLocalData}
+          exportEncryptedData={exportEncryptedData}
           importFileRef={importFileRef}
           handleImportFileChange={handleImportFileChange}
           importMsg={importMsg}
+          autoBackupEnabled={autoBackupEnabled}
+          setAutoBackupEnabled={setAutoBackupEnabled}
+          backups={backups}
+          onRestoreBackup={handleRestoreBackup}
+          onDeleteBackup={handleDeleteBackup}
         />
       )}
 
@@ -4209,6 +4497,10 @@ export default function HomePage() {
           loginSuccess={loginSuccess}
           handleSendOtp={handleSendOtp}
           handleVerifyEmailOtp={handleVerifyEmailOtp}
+          handleLocalLogin={handleLocalLogin}
+          handleLocalRegister={handleLocalRegister}
+          setLoginError={setLoginError}
+          isSupabaseConfigured={isSupabaseConfigured}
         />
       )}
 
