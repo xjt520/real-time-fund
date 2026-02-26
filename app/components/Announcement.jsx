@@ -66,7 +66,7 @@ export default function Announcement() {
               为了增加更多用户方便访问, 新增国内加速地址：<a className="link-button"
                                                           target="_blank"
                                                           rel="noopener noreferrer"
-                                                          style={{ color: 'var(--primary)', textDecoration: 'underline', padding: '0 4px', fontWeight: 600 }} href="https://aifund.cc.cd/">https://fund.cc.cd/</a>
+                                                          style={{ color: 'var(--primary)', textDecoration: 'underline', padding: '0 4px', fontWeight: 600 }} href="https://aifund.cc.cd/">https://aifund.cc.cd/</a>
               <p>节后第一次更新内容如下：</p>
               <p>1. OCR 识别截图导入基金。</p>
               <p>2. 基金历史曲线图。</p>
