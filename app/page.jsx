@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useMemo, useLayoutEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { createWorker } from 'tesseract.js';
@@ -276,6 +277,7 @@ function GroupSummary({ funds, holdings, groupName, getProfit, stickyTop }) {
 }
 
 export default function HomePage() {
+  const router = useRouter();
   const [funds, setFunds] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -3345,7 +3347,7 @@ export default function HomePage() {
                         className="user-menu-item"
                         onClick={() => {
                           setUserMenuOpen(false);
-                          window.location.href = '/arbitrage';
+                          router.push('/arbitrage');
                         }}
                       >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3400,7 +3402,7 @@ export default function HomePage() {
                         className="user-menu-item"
                         onClick={() => {
                           setUserMenuOpen(false);
-                          window.location.href = '/arbitrage';
+                          router.push('/arbitrage');
                         }}
                       >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
