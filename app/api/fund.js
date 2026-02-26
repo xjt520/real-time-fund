@@ -432,7 +432,7 @@ export const fetchShanghaiIndexDate = async () => {
 };
 
 export const fetchLatestRelease = async () => {
-  const res = await fetch('https://api.github.com/repos/hzm0321/real-time-fund/releases/latest');
+  const res = await fetch('https://api.github.com/repos/xjt520/real-time-fund/releases/latest');
   if (!res.ok) return null;
   const data = await res.json();
   return {
@@ -498,7 +498,7 @@ export const fetchFundHistory = async (code, range = '1m') => {
         // Fetch first page to get metadata
         const firstUrl = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=${page}&per=${per}&sdate=${sdate}&edate=${edate}`;
         await loadScript(firstUrl);
-        
+
         if (!window.apidata || !window.apidata.content || window.apidata.content.includes('暂无数据')) {
           resolve([]);
           return;

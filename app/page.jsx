@@ -3228,7 +3228,8 @@ export default function HomePage() {
           {error && <div className="muted" style={{ marginTop: 8, color: 'var(--danger)' }}>{error}</div>}
         </div>
         <div className={`actions ${(isSearchFocused || selectedFunds.length > 0) ? 'search-focused-sibling' : ''}`}>
-          {hasUpdate && (
+          {/* 更新提示已隐藏 */}
+          {false && hasUpdate && (
             <div
               className="badge"
               title={`发现新版本 ${latestVersion}，点击前往下载`}
