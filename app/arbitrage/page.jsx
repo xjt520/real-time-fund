@@ -15,6 +15,9 @@ import {
   ArbitrageCalculator,
 } from '../components/arbitrage';
 import { RefreshIcon } from '../components/Icons';
+import MonitorSettings from '../components/arbitrage/MonitorSettings';
+import InPageNotification from '../components/InPageNotification';
+import { showInPageNotification } from '../lib/pushNotifications';
 
 const FAVORITES_KEY = 'arbitrage_favorites';
 
@@ -39,12 +42,26 @@ export default function ArbitragePage() {
 
   const [selectedFund, setSelectedFund] = useState(null);
   const [showCalculator, setShowCalculator] = useState(false);
+  const [showMonitorSettings, setShowMonitorSettings] = useState(false);
+  const [monitoredCodes, setMonitoredCodes] = useState([]);
 
+  // 加载收藏和监控列表
   useEffect(() => {
     const saved = localStorage.getItem(FAVORITES_KEY);
     if (saved) {
       try {
         setFavorites(JSON.parse(saved));
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    // 加载监控配置
+    const savedConfig = localStorage.getItem('arbitrage_monitor_config');
+    if (savedConfig) {
+      try {
+        const config = JSON.parse(savedConfig);
+        setMonitoredCodes(config.monitoredCodes || []);
       } catch (e) {
         // ignore
       }
@@ -57,6 +74,37 @@ export default function ArbitragePage() {
         ? prev.filter((c) => c !== code)
         : [...prev, code];
       localStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const toggleMonitor = useCallback((code) => {
+    setMonitoredCodes((prev) => {
+      let next;
+      if (prev.includes(code)) {
+        next = prev.filter((c) => c !== code);
+      } else {
+        next = [...prev, code];
+      }
+
+      // 更新 localStorage 中的监控配置
+      const savedConfig = localStorage.getItem('arbitrage_monitor_config');
+      let config = {
+        enabled: false,
+        interval: 30000,
+        threshold: 2,
+        monitoredCodes: [],
+      };
+      try {
+        if (savedConfig) {
+          config = { ...config, ...JSON.parse(savedConfig) };
+        }
+      } catch (e) {
+        // ignore
+      }
+      config.monitoredCodes = next;
+      localStorage.setItem('arbitrage_monitor_config', JSON.stringify(config));
+
       return next;
     });
   }, []);
@@ -136,7 +184,14 @@ export default function ArbitragePage() {
 
         <div style={{ fontWeight: 600, fontSize: 16 }}>套利监控</div>
 
-        <div className="refresh-btn-wrap">
+        <div className="refresh-btn-wrap" style={{ display: 'flex', gap: 8 }}>
+          <button
+            className="icon-button"
+            onClick={() => setShowMonitorSettings(true)}
+            title="监控设置"
+          >
+            🔔
+          </button>
           <button
             className="icon-button"
             onClick={() => fetchData(true)}
@@ -198,6 +253,8 @@ export default function ArbitragePage() {
         onRowClick={handleRowClick}
         favorites={favorites}
         onToggleFavorite={toggleFavorite}
+        monitoredCodes={monitoredCodes}
+        onToggleMonitor={toggleMonitor}
       />
 
       <AnimatePresence>
@@ -224,6 +281,27 @@ export default function ArbitragePage() {
             </motion.div>
           </motion.div>
         )}
+
+        {showMonitorSettings && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowMonitorSettings(false)}
+          >
+            <motion.div
+              className="glass card modal"
+              style={{ maxWidth: 480 }}
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MonitorSettings onClose={() => setShowMonitorSettings(false)} />
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       <div className="footer" style={{ marginTop: 32 }}>
@@ -234,6 +312,9 @@ export default function ArbitragePage() {
           折溢价率 = (场内价格 - IOPV) / IOPV × 100%
         </p>
       </div>
+
+      {/* 页面内通知组件 */}
+      <InPageNotification />
     </div>
   );
 }

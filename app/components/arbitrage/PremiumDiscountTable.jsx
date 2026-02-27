@@ -12,6 +12,8 @@ export default function PremiumDiscountTable({
   onRowClick,
   favorites,
   onToggleFavorite,
+  monitoredCodes,
+  onToggleMonitor,
 }) {
   const sortedData = useMemo(() => {
     if (!data || data.length === 0) return [];
@@ -109,6 +111,7 @@ export default function PremiumDiscountTable({
 
       {sortedData.map((item) => {
         const isFavorite = favorites?.includes(item.code);
+        const isMonitored = monitoredCodes?.includes(item.code);
         const highlightStyle = getHighlightStyle(item.premiumDiscountPercent);
 
         return (
@@ -187,7 +190,36 @@ export default function PremiumDiscountTable({
               </span>
             </div>
 
-            <div className="table-cell text-center action-cell">
+            <div className="table-cell text-center action-cell" style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
+              <button
+                className={`icon-button ${isMonitored ? 'active' : ''}`}
+                style={{
+                  width: 32,
+                  height: 32,
+                  padding: 0,
+                  backgroundColor: isMonitored ? 'rgba(52, 211, 153, 0.15)' : 'transparent',
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleMonitor?.(item.code);
+                }}
+                title={isMonitored ? '取消监控' : '加入监控'}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill={isMonitored ? 'var(--success)' : 'none'}
+                  stroke="var(--success)"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </button>
               <button
                 className={`icon-button fav-button ${isFavorite ? 'active' : ''}`}
                 style={{

@@ -177,6 +177,15 @@ export async function fetchLofEtfQuote(code, type = 'ETF') {
 }
 
 /**
+ * 生成唯一的回调函数名
+ */
+let callbackId = 0;
+function generateCallbackName() {
+  callbackId += 1;
+  return `jsonpgz_${callbackId}_${Date.now()}`;
+}
+
+/**
  * 获取 ETF 的 IOPV（实时参考净值）
  * 使用天天基金估值接口
  * @param {string} code ETF 代码
@@ -193,18 +202,19 @@ export async function fetchIOPV(code) {
     () =>
       new Promise((resolve) => {
         const script = document.createElement('script');
-        script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
+        const callbackName = generateCallbackName();
 
-        const originalJsonpgz = window.jsonpgz;
+        script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
 
         const cleanup = () => {
           if (document.body.contains(script)) {
             document.body.removeChild(script);
           }
-          window.jsonpgz = originalJsonpgz;
+          delete window[callbackName];
         };
 
-        window.jsonpgz = (data) => {
+        // 使用唯一回调函数名
+        window[callbackName] = (data) => {
           cleanup();
           if (data && data.gsz) {
             resolve(parseFloat(data.gsz));
@@ -215,15 +225,24 @@ export async function fetchIOPV(code) {
           }
         };
 
+        // 备用：也设置 jsonpgz（某些情况下接口可能使用固定名）
+        const originalJsonpgz = window.jsonpgz;
+        window.jsonpgz = window[callbackName];
+
         script.onload = () => {
-          if (window.jsonpgz === originalJsonpgz) {
-            cleanup();
-            resolve(null);
-          }
+          // 如果 100ms 后还没有响应，清理
+          setTimeout(() => {
+            if (window[callbackName]) {
+              cleanup();
+              window.jsonpgz = originalJsonpgz;
+              resolve(null);
+            }
+          }, 100);
         };
 
         script.onerror = () => {
           cleanup();
+          window.jsonpgz = originalJsonpgz;
           resolve(null);
         };
 
@@ -231,6 +250,7 @@ export async function fetchIOPV(code) {
 
         setTimeout(() => {
           cleanup();
+          window.jsonpgz = originalJsonpgz;
           resolve(null);
         }, 5000);
       }),
@@ -256,18 +276,19 @@ export async function fetchLofNav(code) {
     () =>
       new Promise((resolve) => {
         const script = document.createElement('script');
-        script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
+        const callbackName = generateCallbackName();
 
-        const originalJsonpgz = window.jsonpgz;
+        script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
 
         const cleanup = () => {
           if (document.body.contains(script)) {
             document.body.removeChild(script);
           }
-          window.jsonpgz = originalJsonpgz;
+          delete window[callbackName];
         };
 
-        window.jsonpgz = (data) => {
+        // 使用唯一回调函数名
+        window[callbackName] = (data) => {
           cleanup();
           if (data) {
             resolve({
@@ -281,15 +302,23 @@ export async function fetchLofNav(code) {
           }
         };
 
+        // 备用：也设置 jsonpgz
+        const originalJsonpgz = window.jsonpgz;
+        window.jsonpgz = window[callbackName];
+
         script.onload = () => {
-          if (window.jsonpgz === originalJsonpgz) {
-            cleanup();
-            resolve(null);
-          }
+          setTimeout(() => {
+            if (window[callbackName]) {
+              cleanup();
+              window.jsonpgz = originalJsonpgz;
+              resolve(null);
+            }
+          }, 100);
         };
 
         script.onerror = () => {
           cleanup();
+          window.jsonpgz = originalJsonpgz;
           resolve(null);
         };
 
@@ -297,6 +326,7 @@ export async function fetchLofNav(code) {
 
         setTimeout(() => {
           cleanup();
+          window.jsonpgz = originalJsonpgz;
           resolve(null);
         }, 5000);
       }),
